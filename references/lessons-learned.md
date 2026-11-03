@@ -182,3 +182,47 @@
   2. 若不是 JSON，则对“解析页地址本身”调用 `sniffVideo`
   3. 若嗅探无结果，或 JSON 缺 `url` / 状态失败，则回退原生目标地址，并设置为交给播放器继续解析的模式（如 `parse=1`）
 - 这样能避免日志里大量出现 `Unexpected token '<'` 后直接把整条线路判死，同时保留前端/播放器自己的兜底能力。
+
+## 25. 字节系 CDN（douyinvod / byteimg / ixigua）不能带外站 Referer
+- 现象：某条线路的剧集点了没反应或一直转圈，后端日志里是
+  `代理播放响应 status_code=403`，而上游 URL 形如 `https://v11-cold.douyinvod.com/.../xxx.mp4`。
+- 原因：脚本的 `play()` 通常统一返回一套 `PLAY_HEADERS`（带站点 `Referer` / `Origin`），
+  但抖音/西瓜这类字节系 CDN 会拒绝带外站 Referer 的请求。
+- 实测对照（同一 URL，同一 UA）：
+
+  | 请求头 | 结果 |
+  |---|---|
+  | 站点 Referer + Origin | 403 |
+  | 只有站点 Referer | 403 |
+  | 不带 Referer | **200** |
+
+- 正确做法：按**最终播放地址的 host** 决定头，而不是一套头走天下。
+
+  ```js
+  const CDN_STRIP_HEADER_RE = /(douyinvod|douyinpic|douyinstatic|byteimg|ibytedtos|ixigua|bytedance)/i;
+
+  function buildPlayHeaders(targetUrl, base = PLAY_HEADERS) {
+    const headers = { ...base };
+    let host = "";
+    try { host = new URL(targetUrl).hostname; } catch (_) {}
+    if (host && CDN_STRIP_HEADER_RE.test(host)) {
+      delete headers.Referer; delete headers.referer;
+      delete headers.Origin;  delete headers.origin;
+    }
+    return headers;
+  }
+  ```
+
+- 注意别一刀切：`*.gtimg.com`（腾讯）、普通 m3u8 站外源带站点 Referer 反而是 200，
+  只有字节系域名需要剥掉。
+
+## 26. 改完 `play` 脚本没效果，先怀疑后端的结果缓存
+- 后端有一张 `spider_play_result_cache` 表，按 `source_id + flag + play_id_hash` 缓存 play 结果，
+  TTL 约 **10 分钟**。另外 `spider_script_cache` 也会缓存脚本内容。
+- 表现：脚本明明改了（容器里 `grep` 能看到新代码、直接 `node index.js` 跑也是新行为），
+  但走 `/api/spider-source/:id/execute` 或前端播放时仍是旧结果。
+- 处理顺序：
+  1. 保存脚本（`PUT /api/spider-source/:id/script`）刷新脚本缓存
+  2. 清播放缓存：`DELETE FROM spider_play_result_cache WHERE source_id='<源ID>';`
+  3. 还不行就重启容器
+- 调试时请**优先直接跑脚本**验证逻辑，再回头看后端链路，能把“脚本没改对”和“缓存没刷”区分开。

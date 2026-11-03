@@ -483,6 +483,8 @@ try {
 - 文档里明确了 `context` 是 Runner 注入，不要自己发明额外调用方式
 - `context.prefetch === true` 是预热调用，任何写操作（缓存、历史、签到）都要跳过
 - `vod_tag: "folder"` 是目录项，不是播放项
+- 播放头要按**目标 host** 生成：字节系 CDN（`douyinvod` / `byteimg` / `ixigua`）带站点 Referer 会 403，必须剥掉。
+- 后端有 `spider_play_result_cache`（约 10 分钟）与 `spider_script_cache`：改完 play 没效果时先清缓存，再怀疑代码。
 - 分组型网盘源里要特别区分“网盘类型分组”和“具体分享项”：前者可用 `vod_tag: "folder"`，后者如果预期点击后直接进入 `detail()` 生成剧集列表，就不要再标成 `folder`；优先改成 `vod_tag: "video"` 或等价的详情项语义，否则宿主很可能把“具体分享”继续当目录，多出一层文件夹页。
 - 如果日志已经证明点击某个分享时 `parsePanFolderVodId()` 能解析出 `isShareEntry: true`，且 `detail()` 内也已经拿到了 `videoCount > 0`，那么问题通常不在文件递归，而在列表项语义（如 `vod_tag`）或宿主点击链路。
 - 分组型网盘源的详情标题默认不要主动拼 ` [百度网盘] / [夸克] / [XX网盘] ` 这类后缀；`vod_name` 应优先保持原始剧名，必要时只在 `vod_remarks`、线路名或分组名里体现网盘类型。
