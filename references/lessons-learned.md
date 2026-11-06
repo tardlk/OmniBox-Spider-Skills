@@ -226,3 +226,20 @@
   2. 清播放缓存：`DELETE FROM spider_play_result_cache WHERE source_id='<源ID>';`
   3. 还不行就重启容器
 - 调试时请**优先直接跑脚本**验证逻辑，再回头看后端链路，能把“脚本没改对”和“缓存没刷”区分开。
+
+## 27. 把鱼壳（webhtv）Python 源移植到 OmniBox 的三个坑
+- 鱼壳源继承 `base.spider.Spider`、handler 是同步的 `homeContent/detailContent/playerContent`，
+  OmniBox 是 `from spider_runner import OmniBox, run` + `async def home(params, context)`，
+  两者协议不通，必须重写，不能直接复制。
+- **建源时 `type` 要写 `python`**（不是 `js`、也不是 `py`）：
+  - `type=python` → `scriptPath = <id>/index.py`
+  - `type=js` / `type=py` → 仍然是 `index.js`，会把 Python 代码交给 node 跑，
+    报 `SyntaxError: Invalid or unexpected token`。
+- 依赖能省则省：
+  - `requests` 可以换成标准库 `urllib.request`，少一次 pip 安装
+  - `pycryptodome` 可以内嵌一份纯 Python AES-CBC（约 120 行），
+    省掉 pip 依赖；注意 S 盒要用 GF(2^8) 指数/对数表生成，
+    手写 256 项常量很容易错一位导致全部解不出来
+- `playId` 建议 `base64url(json{u,f,n})`，别把带 `?&=#` 的长 URL 直接塞进去。
+- 日志必须包一层 try/except：缺 `sourceId` 时 `OmniBox.log` 会抛错，
+  在 except 分支里再抛一次会把整条请求打挂。
