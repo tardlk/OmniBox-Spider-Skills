@@ -290,3 +290,38 @@ Hit-status: MISS
 - 有的站点是显式的：分片参数里直接带 `whip=<请求方IP>`（一眼可见）；
   有的隐式的：IP 被 hash 进 `auth_key` 的签名段，看不出来，只能靠对比测试。
 - 别指望伪造 `X-Forwarded-For` 骗过站点：多数站点前置 WAF 会直接 403。
+
+## 29. 「封面不显示」八成是详情页指向了 tmdb 原图，不是选择器写错了
+
+排查顺序反了会白改好几轮。正确的第一步是**把 home / search / detail 三处返回的
+`vod_pic` 都打印出来对比**，而不是先怀疑 `img` 选择器。
+
+真实案例（4KVM）：
+
+| 位置 | 来源字段 | 实际地址 | 结果 |
+|---|---|---|---|
+| home / search | `<img data-src>` 竖版图 | `gimg0.baidu.com/gimg/...&src=4kvm.staticimgjs.org/...-300x450.jpg`（28KB） | 正常 |
+| detail | `.video-player[data-poster]` | `gimg0.baidu.com/gimg/...&src=image.tmdb.org/t/p/original/xxx.jpg`（821KB） | **国内连不上** |
+
+`image.tmdb.org` 在国内基本不可达，且 `original` 是原图。表现就是「列表有封面、
+点进详情页一片空白」。
+
+### 修法
+1. **封面优先取站点自己的图**。CMS 站点的 `<meta property="og:image">` 通常就是站点
+   压缩过的竖版海报，比播放器的 `data-poster` 小一个数量级，还免翻墙。
+2. **刮削结果不要无条件覆盖封面**。`scrapeData.posterPath` 是 tmdb 的，直接盖上去
+   等于把好不容易拿到的本地图换成墙外图。判定条件写成「站点没图 / 站点图来自 tmdb
+   才换」，并且用 `w500` 而不是 `original`。
+3. **外链图统一走国内代理**。百度图床可以直接当中转：
+   ```
+   https://gimg0.baidu.com/gimg/app=2001&n=0&g=0n&fmt=jpeg&src=<去掉scheme的地址>
+   ```
+   注意这个格式**没有 `?`**（`/gimg/app=2001&...`），补成 `/gimg?app=2001` 反而 404。
+4. 给个开关：`K4VM_IMG=baidu`（默认，保留站点代理）/ `direct`（还原源站直连，
+   海外环境更快）。
+
+### 顺带一个选择器陷阱
+`.absolute.bottom-0 span` 匹配的是「class 含 `absolute bottom-0` 的元素的**后代** span」，
+如果那个 span **自己**就是 `absolute bottom-0`，选不中，于是掉到下一档兜底
+`.year, .date, span`，把整段剧情简介当成 `vod_remarks` 抓了回来 —— 卡片角标被撑爆。
+改成 `span.absolute.bottom-0`（匹配自身），再加一句「超过 20 字丢弃」，问题消失。
