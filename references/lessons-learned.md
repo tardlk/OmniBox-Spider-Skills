@@ -325,3 +325,50 @@ Hit-status: MISS
 如果那个 span **自己**就是 `absolute bottom-0`，选不中，于是掉到下一档兜底
 `.year, .date, span`，把整段剧情简介当成 `vod_remarks` 抓了回来 —— 卡片角标被撑爆。
 改成 `span.absolute.bottom-0`（匹配自身），再加一句「超过 20 字丢弃」，问题消失。
+
+## 30. 播放地址由 wasm 签名时，别急着上嗅探——把站点的 wasm 拿过来自己跑
+
+`sniffVideo` 每次要开无头浏览器、等页面把播放器拉起来，实测单集 **9~12 秒**。
+但只要播放页是「前端算签名 → fetch 接口拿 m3u8」，这段逻辑就能搬到 Node 里，
+耗时直接降到 **0.3~0.7 秒**。
+
+### 怎么判断站点属于这一类
+播放页 HTML 里搜不到 `m3u8`，但 `app.ultra.min.*.js` 这类文件里能看到：
+
+```js
+const s = await import('/static/wasm/nbmovie_wasm.js');
+await s.default();
+const url = s.build_play_url(dataid, secretKey, quality, userlink);
+fetch(url);
+```
+
+关键词：`build_play_url`、`wasm`、`<link id="wasm-cfg" data-js=... data-bg=...>`。
+有这些就说明地址是本地算出来的，不是服务端渲染的。
+
+### Node 侧落地要点（OmniBox 跑 Node 20，都支持）
+1. **wasm-bindgen 产物是 ESM，要存成 `.mjs` 才能 import**
+   ```js
+   fs.writeFileSync(path.join(dir, "mod.mjs"), jsText);
+   const mod = await import(pathToFileURL(jsFile).href);   // CJS 里动态 import ESM 可以
+   ```
+2. **init 必须喂字节**：Node 没有 `file://` 的 fetch，直接 `init()` 会报
+   `TypeError: fetch failed → not implemented... yet...`
+   ```js
+   await mod.default({ module_or_path: new Uint8Array(fs.readFileSync(wasmFile)) });
+   ```
+3. 文件缓存到 `os.tmpdir()`。首次要下 60~70KB，之后同进程/同容器直接复用。
+   冷启动那次 ~2.4s，热的一次 0.5s。
+
+### 两个必须踩的坑
+- **签名参数里的 userlink 是每次渲染页面现生成的**。同一秒连抓两次都不一样；
+  更坑的是**首页里它是 `'0'`**，拿去签出来的地址必然 `401 请提供访问令牌`。
+  所以：detail 阶段解析 `nav[x-data]` 里的 `userlink:'...'` 存下来，
+  过期或取到 `'0'` 就重新抓一次 `/play/xxx` 页面再签。
+- **签出来的直链多半在抖音系 CDN**（`oss.douyinbit.com` / `v26-default.douyinvod.com`）。
+  实测同一地址：无 Referer → `206 video/mp4`，带 `Referer: https://www.4kvm.net/` → `403`。
+  这就是老问题 #25 的变种，返回 `header` 时必须按 host 把 Referer/Origin 剥掉。
+
+### 结构上怎么留后路
+直取失败（缺 dataid、wasm 拉不到、userlink 拿不到）一律 `return null`，
+让 play 继续走原来的 iframe/video/嗅探链路。嗅探慢但不会坏，
+所以直取只当加速层，不要当唯一路径。
