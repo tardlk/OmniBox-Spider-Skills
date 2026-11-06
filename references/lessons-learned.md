@@ -432,3 +432,59 @@ curl -s "http://<host>/api/tvbox/source/<id>?conv=2&token=<tk>&ac=detail&ids=<vi
 顺带记两个试过不行的绕法：
 - 把 `&` 编码成 `%26`：百度图床直接 **400**
 - 改用 path 风格 `/gimg/app=2001/src/...`：**404**
+
+## 32. 「能播，就是加载很久」：先量 sniffVideo 的真实耗时，别无条件 await
+
+用户说「不能播放」和「要等很久才播」经常是同一条链路：**服务端嗅探超时失败 →
+回退 `parse=1` 把页面交给客户端 webview → 客户端自己把播放器跑起来**。
+这时候 `play()` 里那次 `await OmniBox.sniffVideo(...)` 是纯损耗，白等 10 秒。
+
+### 定位动作（按顺序，别猜）
+1. 用 `POST /api/spider-source/{id}/execute` 对 `play` 计时。
+   实测 NO视频：`10.5s`，返回 `{"parse":1, "urls":[{"url": 详情页}]}` → 嗅探没命中。
+2. 直接打后端嗅探接口确认是不是固定超时：
+   `POST /api/spider/omnibox/video/sniff {"url":..., "headers":{...}}`
+   （SDK 的 `API_BASE_URL` 默认是 `http://localhost:7023/api/spider/omnibox`，
+   所以外部完整路径是 `/api/spider/omnibox/video/sniff`，不是 `/api/video/sniff`）。
+   实测详情页 `9.1s` 返回 `嗅探失败: run video_sniffer: exit status 1`，iframe 页同样失败。
+3. 用容器内 Python Playwright 打开真实页面、监听媒体请求，
+   确认「服务端嗅探不到」到底是链路太深，还是压根需要用户交互。
+
+### 多层 iframe + wasm 完整性校验的站点（NO视频 novipnoad.us 实例）
+真实链路是三层，且**每一层都依赖浏览器环境**：
+
+```
+详情页 (window.playInfo = {vid, pkey})
+  └─ iframe player.<host>/v1/?url=&pkey=&ref=   ← 响应 Set-Cookie: device=...
+       └─ iframe /v1/player.php?id=&device=      ← 需要上面那个 cookie
+            └─ enc-vod.<host>/ftn/<id>.js?ckey=&ref=&ip=&time=
+                 → var videoUrl = JSON.decrypt("...密文...")
+                 → 最终 mp4（ftn.qq.com）
+```
+
+- 外层 iframe 页内嵌一段**每次请求动态生成**的 wasm（约 539B），
+  用浏览器指纹的 djb2 hash 解密出 `ckey`(40 hex) 和 `vkey`(JSON: ref/ip/time)；
+  `vkey` 只在 `window.top !== window.self` 时写入 sessionStorage。
+- 所以**把播放器 iframe 页单独作为顶层打开会直接不出流**（Playwright 实测
+  连 `player.php` 都不请求），`parse=1` 的目标必须是**站点详情页**，
+  由站内 `play.js` 自己去嵌 iframe。
+- 详情页自身也不会自动播（DOM 加载完没有 iframe），需要客户端点一次播放按钮。
+- `JSON.decrypt` 的混淆实现藏在 `/js/jquery.min.js` 尾部；
+  密文每次随 ckey 变，但解出的 mp4 直链在同一集内是稳定的。
+  纯 HTTP 直取要同时复现 wasm 指纹 + 混淆解密，成本远高于收益 → 不要硬啃。
+
+### 可直接复用的规则
+- **先证明 sniffVideo 能成功，再在 `play()` 里 await 它**；
+  若实测固定失败，直接删掉，用 `parse=1` 把页面交回客户端，
+  `play()` 从 10.5s 降到 0.0s。
+- 播放器页带 `top !== self` 之类判断时，`parse=1` 的目标选**站点详情页**，
+  不要选剥出来的 iframe 地址（页面更轻但鉴权不成立）。
+- `parse=1` 只对支持 webview 嗅探的端有效；TVBox 这类端会把它当视频地址，
+  这点要在交付说明里写明，别笼统说「修好了播放」。
+- 顺带优化详情：列表页已知 href，就把真实分类路径编进 `vod_id`
+  （`154887-tv-korea`），`detail()` 一次请求命中；
+  旧版纯数字 id 用 WordPress `/?p=<id>` 的 301 直达兜底
+  （实测 301 → `/tv/korea/154887.html`），最后才回退分类轮询。
+  详情页成功判定要加 `window.playInfo|multilink-btn` 之类的特征校验，
+  否则 404 页会被当成成功、分集恒为 0。
+- 实测收益：detail 3.2s → 1.1s，play 10.5s → 0.0s，韩剧 8 集/电影 1 集/旧 id 均正常。
