@@ -474,9 +474,10 @@ curl -s "http://<host>/api/tvbox/source/<id>?conv=2&token=<tk>&ac=detail&ids=<vi
   纯 HTTP 直取要同时复现 wasm 指纹 + 混淆解密，成本远高于收益 → 不要硬啃。
 
 ### 可直接复用的规则
-- **先证明 sniffVideo 能成功，再在 `play()` 里 await 它**；
-  若实测固定失败，直接删掉，用 `parse=1` 把页面交回客户端，
-  `play()` 从 10.5s 降到 0.0s。
+- ⚠️ **本条结论已被 #33 推翻，不要照抄**：「先证明 sniffVideo 能成功，
+  若实测失败就直接删掉、只留 `parse=1`」会导致彻底无法播放。
+  本地嗅探失败可能只是本地出口 IP 被站点拒绝，且 `parse=1` 并非直链等价物。
+  正确做法见 #33。保留原文仅作为排查过程记录。
 - 播放器页带 `top !== self` 之类判断时，`parse=1` 的目标选**站点详情页**，
   不要选剥出来的 iframe 地址（页面更轻但鉴权不成立）。
 - `parse=1` 只对支持 webview 嗅探的端有效；TVBox 这类端会把它当视频地址，
@@ -488,3 +489,49 @@ curl -s "http://<host>/api/tvbox/source/<id>?conv=2&token=<tk>&ac=detail&ids=<vi
   详情页成功判定要加 `window.playInfo|multilink-btn` 之类的特征校验，
   否则 404 页会被当成成功、分集恒为 0。
 - 实测收益：detail 3.2s → 1.1s，play 10.5s → 0.0s，韩剧 8 集/电影 1 集/旧 id 均正常。
+
+## 33. 【推翻 #32】删掉 sniffVideo 前，必须确认「删掉后客户端仍能起播」
+
+#32 实测 NO视频 的 `sniffVideo` 固定 9s 失败，于是 v1.2.0 把它删掉，
+只回 `parse=1 + 详情页`，`play()` 从 10.5s 降到 0.0s。
+用户反馈 **「彻底无法播放」** —— 优化把唯一能用的播放链砍了。
+
+### 为什么判断错了
+- 本地容器（colima）出口 IP 被站点判异常：点击分集后
+  `enc-vod...js?ckey=...` 返回 404、播放器显示 `bg_404.png`，
+  所以本地 sniffVideo 100% 失败。**本地失败 ≠ 用户 NAS 失败**。
+- 站点详情页**不自动起播**：DOM 加载完 frames 只有详情页自身，
+  必须点 `.multilink-btn` 才插入 `player.<host>/v1/` iframe。
+  服务端 sniffVideo 是全新 headless context，不会去点按钮，
+  对「多集剧」本来就抓不到流；但 `window.playInfo` 带 `vid` 的**电影页**
+  可能自动起播，用户侧 sniff 成功拿到直链。
+- `parse=1 + 详情页` 只有在客户端 webview 真的加载页面、并让用户点击时才成立；
+  网页端 / TVBox 常把 URL 直接当视频地址 → 一个 HTML 页面当然播不了。
+  所以「删嗅探只留 parse=1」不是等价替换。
+
+### 正确做法
+1. 先量清「慢」来自哪里：宿主 `video_sniffer.py` 是
+   `page.goto(domcontentloaded) + asyncio.sleep(wait_after_load_ms=6000)`
+   再加候选探测，约 9 秒是**宿主固定开销**。SDK 签名只有
+   `sniffVideo(url, headers)`；后端实测忽略 `timeout_ms` / `wait_after_load_ms`
+   （传 2000 仍耗时 8.96s），脚本侧无法缩短。
+2. 不要因为本地嗅探失败就删主链路。保留三段式：
+   `sniffVideo → 成功 parse=0 直链 → 失败 parse=1 页面回退`。
+   只做无损优化（传 UA/Referer、补耗时与结果日志、detail 走 `?p=` 直达）。
+3. 要给用户对比手段，就加环境变量开关（如 `NOVIDEO_SKIP_SNIFF=1`），
+   **默认保持已验证可播的行为**，别默认切到未验证的新链路。
+4. `vod_id` 这类宿主侧标识别顺手改格式。1.2.0 把纯数字改成
+   `154887-tv-korea` 虽让 detail 变快，但给播放/历史链路引入额外变量；
+   回退时一并还原纯数字，用 WordPress `/?p=<id>` 301 兜底
+   （1.85s，仍快于逐分类试探的 3.2s），并兼容曾发出的带路径 id。
+5. 改完 `play()` 要提醒清 `spider_play_result_cache`（约 10 分钟），
+   否则旧结果被复用，看起来像「没修好」。playId 结构变化通常能让 key 自动失效。
+
+### 回归实测（v1.2.1，本地 27023 beta）
+category 1.45s / vod_id 纯数字；detail 纯数字 1.85s(5集)、
+旧格式 id 1.06s(8集)、电影 1.47s(1集)；play 8.78s 后按预期回退 parse=1，
+`urls/parse/header` 与 1.0.2 一致。
+
+### 一句话
+「嗅探慢」该优化的是等待，不是把嗅探删掉；
+在拿到可替代的真实直链之前，`parse=1` 绝不是直链的等价物。
