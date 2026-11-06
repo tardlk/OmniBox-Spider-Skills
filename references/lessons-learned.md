@@ -535,3 +535,59 @@ category 1.45s / vod_id 纯数字；detail 纯数字 1.85s(5集)、
 ### 一句话
 「嗅探慢」该优化的是等待，不是把嗅探删掉；
 在拿到可替代的真实直链之前，`parse=1` 绝不是直链的等价物。
+
+## 34. 同一站点「电影能播、剧集不能播」：自动起播 vs 需要点击，以及 wasm/ckey 完整逆向
+
+NO视频(novipnoad.us) 用户反馈：电影《生化危机》能播，台剧/港剧全部失败。
+日志里剧集 `play` 固定 8~9s 后 `嗅探失败: exit status 1` -> 回退 parse=1。
+
+### 根因（Playwright 实测）
+- **电影**详情页 `window.playInfo={vid:"ftn-...",pkey:"..."}`（文章正文内联脚本），
+  `play.js` 加载后**自动**插入播放器 iframe → 服务端 sniffVideo 能抓到 mp4
+  → 返回 `parse=0` 直链，用户端可播（本地实测 9.22s / parse=0 / njc-download.ftn.qq.com）。
+- **剧集**详情页 `window.playInfo` 只有 `pkey`，DOM 加载完 frames 只有详情页自身、
+  8 秒零媒体请求；必须点 `.multilink-btn[data-vid]` 才创建 iframe。
+  宿主 `video_sniffer.py` 只 goto + sleep，**不会点击** → 剧集嗅探 100% 失败。
+- 由此反推：该用户端 **只认 parse=0 真实直链**，parse=1 页面（无论详情页还是
+  播放器页）都不生效。判断依据：1.2.0 只回 parse=1 时「彻底无法播放」，
+  1.2.1 恢复嗅探后电影立刻可播。别再假设客户端有可用 webview。
+
+### 完整播放链与可复现结论
+```
+详情页 (playInfo{vid,pkey})
+  └─ iframe player.<host>/v1/?url=<vid>&pkey=<pkey>&ref=<站内路径>   [Set-Cookie: device]
+       └─ iframe /v1/player.php?id=<vid>&device=...                     [postMessage AUTH ckey]
+            └─ <script src=enc-vod.<host>/<prefix>/<id>.js?ckey=&ref=&ip=&time=>
+                 → var videoUrl=JSON.decrypt("密文")  (或 {"code":403/404...})
+                 → {"code":200,"quality":[{"url":"https://njc-download.ftn.qq.com/.../hd.mp4"}]}
+```
+1. `/v1/` 页内 wasm（539~544B）**每次请求动态生成**，seed 不是固定浏览器指纹值：
+   页面里的 CSS 常量也随机。可从 iframe HTML 静态解析：
+   `grid-template-columns:(\d+)px 1fr (\d+)px;width:(\d+)px` → 第二段列宽 = W-a-b；
+   `?(\d{4,6}):0` 两处 → canvas/proto 常量（83927 / 61934）；
+   `width:(\d+)px!important` 第一个 → CSS 检测值。
+   `str = "<grid>|<canvas>|<proto>|<css>"`，`seed = djb2(str)`（JS 位运算得到有符号 i32）。
+2. Node 里 `WebAssembly.Module(bytes)` + `Instance` 注入 `env.auth(cp,cl,vp,vl)`，
+   `run(seed)` 后从 `exports.memory.buffer` 读出 `ckey`(40hex) 和
+   `vkey`(`{"ref","ip","time"}`)。**不需要浏览器**。
+3. 请求 enc-vod 时 `ckey` 必须 **`.toUpperCase()`**，小写返回 `{"code":403,"msg":"invalid request"}`；
+   大写返回 200 + 密文。`ref/ip/time` 用 vkey 里的原值，且要与 iframe 同一次请求配套（时效性）。
+4. `JSON.decrypt` 的混淆实现藏在 `/js/jquery.min.js?v=3.3.1_20260613` 尾部约 56KB，
+   从 `Function(` 处（`new Function` 语法合法的唯一偏移）往后可在 Node/vm 里 eval 出
+   `JSON.decrypt`，但**解密依赖浏览器运行时上下文**（补 location/sessionStorage.vkey/
+   navigator/document.referrer/ckey 后仍是乱码，decodeURIComponent 抛 URIError）。
+   纯 HTTP 直取因此未采用；不要为了省 9 秒把 56KB 混淆代码内联进爬虫脚本。
+5. 把 `/v1/` 播放器 URL 作为 **iframe 子帧**加载（父页面任意 http 页）时全链路可通、
+   `videoUrl` 为 code:200；但作为顶层打开、或放在 `data:text/html` 页里（静态/动态/srcdoc
+   三种都试过）都 **hits 为空**。宿主 sniffVideo 只做 goto，无法注入 iframe → 包装页方案无效。
+   给 sniff 传 Referer header 也救不回来。
+
+### 可复用规则
+- 同一站点「电影行、剧集不行」优先查 `window.playInfo` 是否带 vid、页面是否自动起播，
+  别只盯 IP/风控。
+- 服务端嗅探器不会点击任何 DOM；需要交互才能出流的站点，sniffVideo 必然失败。
+- 用 `parse=0` 直链能否拿到，决定客户端能不能播；先用一次「能播」的内容实测
+  play 返回的 parse 值，反推客户端能力，再决定要不要保留 parse=1 页面回退。
+- 剧集白等 9 秒无意义，可改成每集独立的播放器 URL（主）+ 详情页（备）两条线路，
+  并用环境变量（如 `NOVIDEO_MODE=player|page|sniff`）保留回退，默认别动已验证可播的电影链路。
+- 彻底解决仍需复现 `JSON.decrypt` 的密钥派生（疑与浏览器环境指纹/页面上下文有关）。
