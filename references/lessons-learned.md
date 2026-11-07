@@ -606,3 +606,46 @@ NO视频(novipnoad.us) 用户反馈：电影《生化危机》能播，台剧/�
   http 父页面来嵌 `/v1/`（让 wasm 写 vkey），而宿主嗅探器只能 goto 一个 URL、
   不能注入或点击。在宿主支持「自动点击/执行 JS」之前，这类站点在网页端只能看
   单集/电影；多集剧要直链就得换源或让客户端用带嗅探 webview 的端。
+
+## 35. MacCMS 站点：列表走 ajax/data、搜索被关、响应体被二次 JSON 编码
+
+zzztool.com（枫叶4K影院，zp 模板）实测，可作为同类 MacCMS 站的排查模板。
+
+### 可用入口
+- 列表：`/index.php/ajax/data?mid=1&tid=<tid>&limit=30&page=<n>`
+  返回 `{code,page,pagecount,total,list[]}`，字段很全（vod_id/vod_name/vod_pic/
+  vod_remarks/vod_actor/vod_director/vod_blurb/type_id/type_id_1…）
+  - `limit` 上限 30，传 50/100 会异常只回 10 条
+  - `tid` 是父分类：1 电影 / 2 电视剧 / 3 综艺 / 4 动漫 / 5 短剧（条目里 `type_id_1` 即父类）
+  - `by/order` 无效（固定按时间），`wd/key/keyword` 全部被忽略
+- 详情：`/detail/<id>.html`；播放页 `/play/<id>-<sid>-<nid>.html`
+- 播放页内联 `var player_aaaa={...,"url":"...","from":"...","encrypt":0}`
+
+### 不可用入口（别浪费时间）
+- `/type/*.html`、`/search/-------------.html?wd=`：返回「系统安全验证」图形验证码页；
+  cookie / 手机 UA / POST / `X-Requested-With` / `?security=1` 都绕不过
+- `/index.php/ajax/suggest?wd=` → `{"code":999,"msg":"联想搜索功能关闭中"}`
+- `/api.php/provide/vod/` → 6 字节 `closed`
+- 无 embed/自动起播页：`/embed/<id>.html`、`/play/<id>.html` 都 301 到详情页；
+  `?embed=1` 是精简详情页；`?iframe=1` 只有分集按钮
+
+### 播放线路
+- `/static/js/playerconfig.js` 的 `MacPlayerConfig.player_list` 按 `from` 给 `ps/parse`：
+  `ps=0` → `url` 就是直链（如 dyttm3u8 / 1080zyk / rym3u8）；
+  `ps=1` → `parse` 是第三方解析页前缀（如 `https://xxx/player/?url=`），
+  `url` 是 `co_xxx` / `JD-xxx` 短标识，拼 `${parse}${encodeURIComponent(url)}` 后
+  用 sniffVideo 取直链（9~15s），失败回退 parse=1；`context.prefetch` 时跳过嗅探
+- 解析 `player_list` 用 `indexOf(",MacPlayerConfig.")` 切片，比固定正则稳
+  （后面紧跟 `downer_list` / `server_list`，拼写容易记错）
+
+### 两个通用坑
+1. **宿主会把 text/html 响应体再 JSON 编码一层**（首尾引号 + 内部 `\"` 转义）。
+   `cheerio.load` 后 `h1`/`player_aaaa` 全部取不到，`$("title").text()` 会返回带
+   `</title><meta ...` 的长串——看到这种「标题里混进标签」就优先怀疑这个。
+   统一 `unwrapBody`：对象取 `.body/.data`，字符串首尾是 `"` 就 `JSON.parse` 一次。
+2. **封面百度图床**：`https://gimg0.baidu.com/gimg/app=2001&...&src=image.zzztool.com/upload/...`
+   要提取 `?src=` 还原成 `https://image.zzztool.com/...` 直链，避免 `&` 被转义裂图（同 #31）。
+
+### 实测（v1.0.0，本地 27023）
+home 2.04s/20 条；category 2.32s/30 条 pagecount=376；detail 1.11s（5 线路×30 集）；
+play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓存 0.13s。
