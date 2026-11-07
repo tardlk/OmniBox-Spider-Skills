@@ -591,3 +591,18 @@ NO视频(novipnoad.us) 用户反馈：电影《生化危机》能播，台剧/�
 - 剧集白等 9 秒无意义，可改成每集独立的播放器 URL（主）+ 详情页（备）两条线路，
   并用环境变量（如 `NOVIDEO_MODE=player|page|sniff`）保留回退，默认别动已验证可播的电影链路。
 - 彻底解决仍需复现 `JSON.decrypt` 的密钥派生（疑与浏览器环境指纹/页面上下文有关）。
+
+### 补充（v1.3.1）：网页端只认直链，`data:` 包装被 ORB 拦截
+- 宿主网页端播放器是 ArtPlayer + hls.js（`/app/static/assets/player-*.js`），
+  全文无 `iframe`、无 `parse === 1` 分支，`urls[0].url` 直接进 video/hls。
+  所以 parse=1 的页面 URL（详情页或播放器页）在网页端都不会出画面，
+  只有 parse=0 的 m3u8/mp4 能播。判断「本端能不能播直链」先看这一点。
+- 想用 `data:text/html` 页面当父容器嵌播放器 iframe：iframe 实际落在
+  `chrome-error://chromewebdata`，被 Chrome ORB 拦截（opaque origin 的跨域 HTML），
+  与 Referer 无关（`extra_http_headers` 也救不回来），浏览器安全策略无法绕过。
+- 站点无可用 embed 播放页：`/embed/<id>.html`、`/play/<id>.html` 均 301 到详情页；
+  `?embed=1` 是精简详情页（无 playInfo / video / iframe）；`?iframe=1` 只有分集按钮。
+- 结论：剧集要拿直链，必须有一个 `www.novipnoad.us` / `player.novipnoad.us` 域下的
+  http 父页面来嵌 `/v1/`（让 wasm 写 vkey），而宿主嗅探器只能 goto 一个 URL、
+  不能注入或点击。在宿主支持「自动点击/执行 JS」之前，这类站点在网页端只能看
+  单集/电影；多集剧要直链就得换源或让客户端用带嗅探 webview 的端。
