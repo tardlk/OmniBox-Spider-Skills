@@ -991,5 +991,11 @@ GET  {host}/auete4so.php?searchword=kw  + Cookie: PHPSESSID=...
    - 但**不要**把站点自带的 `/img.php?url=` 拆开：那层代理主要给豆瓣图用
      （`img3.doubanio.com` 直连 418，wsrv 取也 404），站点代理实测稳定（18KB/1.8s）。
      即「包过的保持原样，没包过的按图床决定要不要代理」
-   - wsrv 在我这台机器上时通时断（容器里 handshake 超时），所以必须留
-     `AU_IMG_PROXY=auto|wsrv|site|off` 开关，别把用户唯一的封面路径焊死
+   - **wsrv 不可靠**：同一批 10 张图里只稳定出 3 张（容器里 handshake 超时、
+     半截响应），用户侧表现就是「只有几季有封面」。别拿它当唯一路径
+   - 最稳的是 **OmniBox 自带的服务端图片代理**：`context.baseURL` 里就有地址，
+     `GET {baseURL}/api/proxy/image?url=<encodeURIComponent(原图)>`，
+     由 NAS 自己拉图再回给客户端（实测 10/10 全 200，0.2s，客户端网络再差也能显示）。
+     它拉不动豆瓣（douban 回 403 Tengine），所以豆瓣图仍交给站点的 `img.php`
+   - 留 `AU_IMG_PROXY=auto|server|wsrv|site|off` 开关，并在拿不到 `baseURL` 时
+     逐级降级（server → wsrv → 原图）
