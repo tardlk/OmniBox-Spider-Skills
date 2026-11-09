@@ -725,3 +725,31 @@ play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓
   不要直接去重——两条线路集数不同（232 vs 220），合并会丢集。
 - 顺带结论：线路名只是展示用，路由仍靠 `playId = videoId-sid-nid`，
   改名不会影响已收藏/历史里的播放。
+
+### 补充：解析流「200 但不可播」的两种假货，以及 4K 卡在码率
+枫叶4K影院《灵武大陆》两条蓝光2k 全挂，至臻4k 能播但极卡。逐层查下来：
+1. **占位演示流**（最坑）：sid=9 解析出
+   `https://yun.jiexicn.top/api/vod/demo/playlist.m3u8`，
+   m3u8 200、分片也 200，但分片实际是 `console.lookbook.top/api/vod/demo/000.gif`
+   经 `image.baidu.com/search/down?url=` 包了一层的 1px 动图。任何「只看状态码」的校验都会放行。
+2. **auth_key 失效后 302 到失效页**：sid=8 解析出
+   `cibn-edge-5g.1ljx.com/cloud/flv/...m3u8?auth_key=<epoch>.<rand>`，
+   过期后 302 → `aibox.eu.org/110`（402 DEPLOYMENT_DISABLED）。
+   带 Referer / 换 UA 都一样，**不是防盗链，是签名过期**。
+3. **master playlist 陷阱**：站点直链多是 `index.m3u8`（97B、只有一行 variant），
+   直接取「首个非 # 行」当分片去探，探到的还是 m3u8（必然 200）。
+   必须先看 `#EXT-X-STREAM-INF`，跟到 `3000k/hls/mixed.m3u8` 这类真正分片列表。
+4. **卡 = 码率，不是脚本**：至臻4k（tjtele PERSONCLOUD）单片 7.6~8MB / 5s ≈ 12Mbps，
+   分片实测 8MB 下载 0.42s（18MB/s），链路本身很快；`x-obs-traffic-limit=409600`
+   并不能删（签名覆盖 query，删掉直接 403）。带宽一般或 HLS 缓冲小的端就卡。
+
+### 可复用规则
+- 校验流是否可播：跟到真分片 → 分片数 ≥3 → 抽检首个分片要 2xx/206；
+  **异常一律判不可用**（不要“失败放行”，那是把死链交给用户的元凶）。
+- 维护占位黑名单：`/api/vod/demo/`、`image.baidu.com`、`console.lookbook.top`、
+  `picsum.photos`；分片是 `.gif` 基本可以直接判假。
+- 换线要并发：详情页拿 sid→线路名，同 nid 并发取多条 `player_aaaa` + 并发抽检，
+  首次 ~7s；再把「失效 sid」和「好用 sid 顺序」各缓存 10~15 分钟，
+  后续同剧换集从 19.5s 降到 7~9s。
+- 高码率线路（分片 ≥2.5MB）自动附带同集 1080p 直链，让用户一键换线；
+  主线路仍按用户点的来，别擅自降清晰度。
