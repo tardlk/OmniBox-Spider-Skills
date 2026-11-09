@@ -894,3 +894,13 @@ OmniBox 的 SDK 只有 `request/sniffVideo/...`，没有「渲染页面」的接
   浏览器兜底只对「JS 挑战 / managed challenge」有效
 - `maxBuffer` 要给足（页面 HTML 动辄几百 KB，默认 1MB 会截断）
 - 别把浏览器当默认路径：能 HTTP 就 HTTP，浏览器只做最后一层
+
+### 补充（#39 后续）：4k-av 的 /s 是真封，别在上面继续投入
+- 实测：`/` 和 `/s` 对无头 Chromium 都返回 CF 的 `you have been blocked`，
+  `status=403 blocked=true`；同一台机器上 home/detail 却是 200
+- 说明这不是「JS 挑战没过」（挑战浏览器能过），而是 **WAF 对路径的硬规则**
+- 依次试过并全部无效：Chrome UA + `sec-ch-ua` 自洽、`/s?k=` 与 `/s?y=` 两个参数、
+  本地扫列表页、child_process 起 Playwright 真浏览器、浏览器先访首页预热会话
+- 结论：这类「搜索被单独封、其余接口正常」的站，**别把搜索当可修复项**；
+  要么让用户从桌面浏览器复制 cf_clearance（仍受 IP+UA 限制），要么直接放弃搜索，
+  把源定位成「浏览 + 播放」，搜索交给能通的源
