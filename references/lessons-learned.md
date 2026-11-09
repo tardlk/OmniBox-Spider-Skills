@@ -846,3 +846,27 @@ await OmniBox.setCache(`src:scan:v1:${key}`, JSON.stringify(list), 900);
   否则客户端会按空结果一直翻 page=2、3、4…，每次都触发一轮扫描
 - 匹配别只比片名：老片条目名常是英文，用「片名 + 副标题 + URL slug」三处匹配
   （`/tv/104102-friends-ep01/` 的 slug 里带原名），命中率明显提升
+
+## 39. 4K-AV（4k-av.com）Cloudflare：GitHub 上公开实现是怎么做的
+
+翻了一圈，**没有**哪个项目真正「绕过」这个站的 CF，公开且能跑的就一个 TVBox 爬虫：
+`default7869/jaychouqq` 仓库里的 `4K影视_2.py`（by @嗷呜）。它跟我们的做法差异很具体：
+
+| 维度 | 参考实现 | 我们原来 |
+|---|---|---|
+| UA | macOS **Chrome 134**，并带 `sec-ch-ua`/`sec-ch-ua-platform`/`sec-fetch-*` | macOS **Safari 17** |
+| 搜索 | `/s?k=<关键词>` | `/s?y=<关键词>` |
+| 取流 | `#MainContent_videowindow source`.src | `video source[src]`（通用） |
+| 反 CF 手段 | 无（被拦一样失败） | 1.2s 节流 + 页面缓存 |
+
+### 结论（可复用）
+- CF 判 bot 很大程度看 **UA 与客户端提示头是否自洽**：Safari UA 配 `sec-ch-ua: Chrome`
+  这类组合反而更像脚本；要么全 Safari，要么全 Chrome，别混
+- 搜索参数别猜，直接照抄能跑的实现（本例 `/s?k=`）；参数错的时候返回的是搜索页空结果，
+  很容易误判成「被 CF 拦」
+- 站点取流选择器 `#MainContent_videowindow source` 比 `video source[src]` 稳
+  （页面里可能有其它 `<source>` 或预告）
+- **真要稳定访问 `/s`，只能带 cf_clearance**：cf_clearance 绑定 IP + UA，
+  换机器/换 UA 立即失效。落地方式就是让用户从浏览器复制整串 Cookie 填环境变量
+  （同时提供 UA 覆盖项），不要试图在脚本里算
+- 这类站点定位建议：**当「找片/看详情」用，播放走别的源**；把播放失败伪装成成功只会更糟
