@@ -649,3 +649,18 @@ zzztool.com（枫叶4K影院，zp 模板）实测，可作为同类 MacCMS 站�
 ### 实测（v1.0.0，本地 27023）
 home 2.04s/20 条；category 2.32s/30 条 pagecount=376；detail 1.11s（5 线路×30 集）；
 play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓存 0.13s。
+
+### 补充：PC / 手机模板与验证码的正确处理方式
+- 该站手机 UA 走 `template/z/`、PC 走 `template/zp/`，但两端搜索表单都指向
+  `/search/-------------.html?wd=`；手机端并不会绕过验证码——
+  用 Playwright 模拟真实 iPhone（mobile + touch + platform=iPhone）提交搜索，
+  结果页仍是「系统安全验证」，手机 UA 直接 curl 也命中 6602 字节验证页。
+- 用户说「手机上能搜」，通常是**之前手动输入过一次验证码，验证 cookie 还在**。
+  验证流程：`POST /captcha.php?type=verify`，body `check=<code>`，
+  成功返回 `{code:1}` 后 `location.reload()`。
+- 因此正确做法不是换 UA，而是让脚本接受手动获取的 Cookie：
+  `ZZZ_COOKIE=<浏览器里复制的整串 Cookie>`，`httpGet` 统一带上；
+  search 先走站内真搜索，命中验证页/空结果时回退本地匹配。
+  这样既保留了「没 cookie 也能用」的降级能力，又能在用户过验证后拿到准确结果。
+- 给用户的操作路径：先用广告拦截屏蔽 `shenhe.js` 让 PC 页面能显示 →
+  打开 `/type/<id>.html` 过一次验证码 → F12 复制 Cookie → 填 `ZZZ_COOKIE`。
