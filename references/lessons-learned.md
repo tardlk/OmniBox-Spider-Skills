@@ -820,3 +820,29 @@ POST {origin}/player/mplayer.php  {"url":"<data-u>","token":"<data-te>"}
 - play 先做「页面内联直链」正则（记得把 `\/` 反转义，并排除 trailer/preview/sample），
   命中就不必再等 8~15 秒嗅探；纯磁力/网盘页且无 iframe/video 时直接返回
   `parse=1` 并标注「仅下载，无在线流」，别让用户以为卡死
+
+## 38. OmniBox 每次 execute 都是新进程：模块级状态一律无效
+
+4kav影院给 search 加了 `/s` 403 冷却（600s）和扫描结果缓存，日志却显示
+page=1/2/3 每次都重新打一次 `/s`（403）再扫 6 个列表页、各花 7 秒，返回的还是同一条。
+
+原因很简单也很容易踩：**执行器每个方法调用都是独立进程**，
+模块顶层的 `let blockedUntil = 0`、`const cache = new Map()` 在新进程里全是初始值。
+任何「跨调用」状态都必须用 `OmniBox.getCache/setCache/deleteCache`。
+
+### 落地写法
+```js
+// 冷却：内存态只做同进程快路径，真值落缓存
+async function cooldownActive() {
+  if (Date.now() < memUntil) return true;
+  return !!(await OmniBox.getCache("src:off:v1"));
+}
+// 结果缓存：key 带版本号，value 用 JSON 字符串，TTL 单位秒
+await OmniBox.setCache(`src:scan:v1:${key}`, JSON.stringify(list), 900);
+```
+
+### 顺带的两个分页坑
+- 本地兜底搜索要**自己分页**：`pagecount = ceil(total/30)`，`page > pagecount` 直接回空列表，
+  否则客户端会按空结果一直翻 page=2、3、4…，每次都触发一轮扫描
+- 匹配别只比片名：老片条目名常是英文，用「片名 + 副标题 + URL slug」三处匹配
+  （`/tv/104102-friends-ep01/` 的 slug 里带原名），命中率明显提升
