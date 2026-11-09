@@ -999,3 +999,21 @@ GET  {host}/auete4so.php?searchword=kw  + Cookie: PHPSESSID=...
      它拉不动豆瓣（douban 回 403 Tengine），所以豆瓣图仍交给站点的 `img.php`
    - 留 `AU_IMG_PROXY=auto|server|wsrv|site|off` 开关，并在拿不到 `baseURL` 时
      逐级降级（server → wsrv → 原图）
+
+### 补充：#42 封面排查的正确姿势（先量，再改）
+用户说「原站封面也加载不出来」时，别急着加代理，先量清楚：
+
+1. 把站点原始 HTML 里的 `<img src>` 全抓下来，逐个 GET，按 host 统计失败率。
+   Auete 实测：首页/分类页 80/82 正常；**老页面 index5/15/40 有 26/121 失败**，
+   全部集中在两个域名上 —— `vod.dyttimage.com`（整站 502，nginx）与
+   `i1.vvmp4.com`（主机 200，但单图大量超时/404）。这类是**源站自己的死链**，
+   任何代理都救不回来，只能在爬虫侧把 vod_pic 置空（让客户端显示默认图）。
+2. 顺手排除「防盗链」这个常见误判：对同一批图分别用「不带 Referer / 站点 Referer /
+   第三方 Referer」请求，三个都 200 就说明没有防盗链，问题不在 Referer。
+3. 也要过滤站点模板没渲染的脏数据：`src="${r.cover}"`（Vue 占位漏到了后端 HTML）、
+   `loading.gif`、`logo.png`。这些直接透传会让客户端挂一个必然裂图的地址。
+4. 注意 `.webp` 占比（Auete 约 1/3）：部分播放端不认 webp，表现是「一部分有图、
+   一部分没有」。要救就得在图片代理上加 `&output=jpg`（wsrv 支持），
+   别指望换 URL 端点能解决。
+5. 用户明确说「不要 NAS 中转」时，默认就 `off` 直连；把 `server / wsrv / site`
+   做成可选开关，别替用户决定走中转。
