@@ -870,3 +870,27 @@ await OmniBox.setCache(`src:scan:v1:${key}`, JSON.stringify(list), 900);
   换机器/换 UA 立即失效。落地方式就是让用户从浏览器复制整串 Cookie 填环境变量
   （同时提供 UA 覆盖项），不要试图在脚本里算
 - 这类站点定位建议：**当「找片/看详情」用，播放走别的源**；把播放失败伪装成成功只会更糟
+
+## 40. 脚本能自己开浏览器：SDK 没给的，child_process + 容器里的 Playwright 可以补
+
+OmniBox 的 SDK 只有 `request/sniffVideo/...`，没有「渲染页面」的接口，
+但**脚本沙箱允许 `require("child_process")`**，而容器里本来就装了
+`python3 + playwright`（`/app/scripts/video_sniffer.py` 用的同一套）。
+实测：一个 JS 源里 `execSync('python3 -c "import playwright"')` 能正常返回。
+
+### 通用写法
+1. 第一次调用时把 helper 写到 `os.tmpdir()`（幂等，不必随脚本打包）
+2. `launch_persistent_context(profile_dir, ...)` 复用 profile —— cf_clearance
+   这类 cookie 才能跨调用存活
+3. 用 `execFileSync("python3", [helper, JSON.stringify(cfg)], { maxBuffer: 32MB })`
+   取 stdout 最后一行 JSON（`{status, html, cookies}`）
+4. **把拿到的 cf_clearance 存进 `OmniBox.setCache`，之后的普通 HTTP 请求直接带 Cookie**：
+   cf_clearance 绑定 IP + UA，同一台机器同一 UA 下有效，能省掉后续每次开浏览器的 6~10 秒
+
+### 坑
+- 冷启动很贵（实测 6~10s），**只在普通请求失败时兜底**，并且失败要记冷却，
+  否则每次搜索/播放都要多等 10 秒
+- IP 被 CF **硬封**（返回 "you have been blocked"）时，真浏览器一样 403，
+  浏览器兜底只对「JS 挑战 / managed challenge」有效
+- `maxBuffer` 要给足（页面 HTML 动辄几百 KB，默认 1MB 会截断）
+- 别把浏览器当默认路径：能 HTTP 就 HTTP，浏览器只做最后一层
