@@ -664,3 +664,17 @@ play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓
   这样既保留了「没 cookie 也能用」的降级能力，又能在用户过验证后拿到准确结果。
 - 给用户的操作路径：先用广告拦截屏蔽 `shenhe.js` 让 PC 页面能显示 →
   打开 `/type/<id>.html` 过一次验证码 → F12 复制 Cookie → 填 `ZZZ_COOKIE`。
+
+### 补充：优先用搜索引擎蜘蛛 UA 绕过图形验证码（修正「搜索已关闭」的结论）
+- 站点对普通 UA 的 `/type/*`、`/search/*` 会弹 4 位数字验证码（白底黑字、无干扰线），
+  但 **Baiduspider / Googlebot / bingbot 的 UA 被直接放行**（Sogou 不在白名单）。
+  实测蜘蛛 UA：`/type/2.html` → 200、46 条、可翻 313 页；
+  `/search/-------------.html?wd=` → 真结果，容器 `.module-card-item`。
+- 所以「搜索接口已关闭」是误判：接口没关，只是对普通 UA 加了验证码。
+  **遇到 `/type`、`/search` 要验证码时，先试主流蜘蛛 UA**，
+  比 OCR、暴力枚举、手工 cookie 都更稳、更快（实测搜索 <1s）。
+- 验证码本身不适合脚本化：
+  - `/captcha.php?type=code` 同一 PHPSESSID 连续请求也会换图，无法先识别再提交
+  - 宿主 `OmniBox.request` 会把 PNG 按 UTF-8 解码（0x89 → U+FFFD），
+    二进制已被破坏，脚本内拿不到原始像素，纯 JS OCR 走不通
+  - 正确路径是让 `httpGet` 支持自定义 UA，搜索/分类用蜘蛛 UA，详情/播放仍用普通 UA
