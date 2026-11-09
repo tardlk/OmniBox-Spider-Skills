@@ -753,3 +753,22 @@ play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓
   后续同剧换集从 19.5s 降到 7~9s。
 - 高码率线路（分片 ≥2.5MB）自动附带同集 1080p 直链，让用户一键换线；
   主线路仍按用户点的来，别擅自降清晰度。
+
+### 补充：解析站有现成取流接口，别再靠 sniffVideo 硬等
+枫叶4K影院用的两个解析站（`zsmyyrv` / `fgsrg`.hzqingshan.com）自带一对接口：
+```
+GET  {origin}/player/?url=<co_xxx|JD-xxx>   → HTML 里下发 data-u / data-te
+POST {origin}/player/mplayer.php  {"url":"<data-u>","token":"<data-te>"}
+     → {"code":200,"url":"https://....m3u8","type":"hls"}
+```
+- 实测 0.5s 出真实地址；token 就是页面里的 `data-te`，可复用，不是本地算的
+- **必须带 `Referer: https://www.zzztool.com/...`**，否则页面返回空（0 字节）
+- 请求体要点：OmniBox SDK 的 `request()` 只要带 `body` 就强制
+  `Content-Type: application/json`，**表单字符串会被当 JSON 发出去**，
+  解析站回 `请传递正确的json参数`。要用 `JSON.stringify({url, token})`；
+  再不行就把参数放 query、body 留空（SDK 不会改 content-type）
+- 解析站**按 IP 限流很凶**：短时间几十次请求后整个域名对本机直接
+  `HTTP/2 PROTOCOL_ERROR` / `Empty reply`，连首页都打不开，要等几分钟才恢复。
+  所以脚本里必须做冷却：失败后缓存 5 分钟，期间直接走 sniff/直链，别重试
+- 换来的收益：启播从 8~15 秒（sniffVideo 固定开销）降到 1~1.5 秒；
+  失效线路也能在 0.5 秒内识别，而不是白等一轮嗅探
