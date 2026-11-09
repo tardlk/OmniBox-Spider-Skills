@@ -1017,3 +1017,19 @@ GET  {host}/auete4so.php?searchword=kw  + Cookie: PHPSESSID=...
    别指望换 URL 端点能解决。
 5. 用户明确说「不要 NAS 中转」时，默认就 `off` 直连；把 `server / wsrv / site`
    做成可选开关，别替用户决定走中转。
+
+### 补充：封面救不回来时，用豆瓣「补图」而不是硬找原图
+Auete 的 `vod.dyttimage.com`（整站 502）与 `i1.vvmp4.com`（大量超时/404）上挂了大量老片封面，
+原站自己都是裂图。这类「源站死链」唯一可行的补法是换图源：
+
+1. `https://movie.douban.com/j/subject_suggest?q=<片名>` 是**匿名 JSON 接口**，
+   返回 `[{title, year, img, ...}]`，不需要登录（带上浏览器 UA + `Referer: movie.douban.com`）。
+2. 返回的 `img` 在 `img?.doubanio.com`，**直连一律 418**；用站点自带的
+   `/img.php?url=<encodeURIComponent(海报)>` 代理可以拿到（jpg 稳定 26KB）。
+3. 代理对 **webp 海报会截断成 168 字节**（假成功），所以要把 `.webp` 换成 `.jpg`，
+   并把分片固定到 `img1.doubanio.com`（实测 img1/img9 的 jpg 正常，img2 返回 168B）。
+4. 片名要清洗后再查一次：站点标题常见 `中文名 / English`、`第X季`、`（国语版）`、`·副标题`，
+   用原串查多半是空数组。
+5. **匿名接口有软限流**：短时间十几连击后固定返回 `[]`，约 1 分钟恢复。
+   所以要做三件事：结果缓存（7 天）、失败负缓存（1 天）、一批里 ≥3 个全空就冷却 90 秒。
+   只给 `vod_pic` 为空的条目补，每次上限 6 个，错开 150ms —— 实测 6 个补齐只多花 0.5s。
