@@ -678,3 +678,20 @@ play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓
   - 宿主 `OmniBox.request` 会把 PNG 按 UTF-8 解码（0x89 → U+FFFD），
     二进制已被破坏，脚本内拿不到原始像素，纯 JS OCR 走不通
   - 正确路径是让 `httpGet` 支持自定义 UA，搜索/分类用蜘蛛 UA，详情/播放仍用普通 UA
+
+### 补充：CDN 带 Referer 反而 SSL 断连，播放 header 不要乱塞
+- 用户「能看到封面但播不了」，但用 hls.js 在 headless Chromium 里实测是能播的
+  （`readyState=4`、`videoWidth=1280/1920`、`currentTime` 正常增长），
+  说明网络与流本身没问题，问题在返回给客户端的东西。
+- 两处真实原因：
+  1) `play()` 的 `header` 里强塞了 `Referer: <站点>`。实测 `svip.ryiplay18.com`
+     带 Referer 直接 `SSL_ERROR_SYSCALL`（curl code=000），不带 Referer 返回 200；
+     `vip.dytt-tvs.com` / `cdn.yzzy31-play.com` 有无 Referer 都正常。
+     -> 播放 header 只保留 `User-Agent`；解析线路优先用 `sniffVideo` 返回的 header
+  2) 详情页线路顺序里前两条是「蓝光2k / 至臻4k」（第三方解析 9~15s），
+     用户点第一条容易以为卡死。-> 把「自营」直链线路排到前面（约 1s）
+- 排查顺序（值得复用）：
+  1. `curl` master m3u8 → 子 playlist，分别带/不带 Referer，看状态码与大小
+  2. `curl -H 'Origin: ...'` 看 `access-control-allow-origin`（网页端 hls.js 必需）
+  3. 用 hls.js + headless Chromium 真播一次，读 `readyState/videoWidth/currentTime`
+  4. 最后才怀疑客户端；只看 `play()` 返回的 JSON 不足以判断「能不能播」
