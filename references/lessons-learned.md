@@ -695,3 +695,21 @@ play 直链 1.06s parse=0；解析线路 9~15s parse=0；search 首次 16s、缓
   2. `curl -H 'Origin: ...'` 看 `access-control-allow-origin`（网页端 hls.js 必需）
   3. 用 hls.js + headless Chromium 真播一次，读 `readyState/videoWidth/currentTime`
   4. 最后才怀疑客户端；只看 `play()` 返回的 JSON 不足以判断「能不能播」
+
+### 补充：m3u8 能下不代表能播——必须抽检首个分片
+- 第三方解析线路会给到「m3u8 200 但分片 404」的残缺流。实例：枫叶4K影院
+  《灵武大陆》至臻4k，m3u8 正常 32KB，但分片
+  `https://nadou.inter.71edge.com/cdn/oss/bj/ifilm/*.png`（PNG 伪装的 TS）
+  返回 `404 {"code":"NoSuchKey"}`；hls.js 表现为 `fragLoadError`、`readyState=0`。
+  同线路《嫁金钗》分片 200 —— 属源站资源缺失，不是脚本或网络问题。
+- 判定方法（低成本，约 1s）：
+  1. 拉 m3u8，取第一条非 `#` 行
+  2. 若是相对路径，用 `new URL(frag, m3u8Url)` 拼绝对（master playlist 的子列表
+     也是相对路径，探子列表够判断）
+  3. 发 `Range: bytes=0-1023` 请求，2xx/206 才算可用
+- 失败要有兜底而不是直接报错：用详情页找**同 nid 的其它 sid**，
+  逐个取 `player_aaaa`，对备选直链同样抽检，把可用线路放第一位返回，
+  坏线路保留但标注「源缺失」，方便用户与排查。
+- 另外：签名类 CDN（`X-Amz-Expires=300` 等）只有 5 分钟有效期，
+  宿主 play 结果缓存约 10 分钟，后 5 分钟必失效——这类线路要么缩短缓存，
+  要么让 playId 带时间片，否则会出现「刚点能播、过一会就不行」。
