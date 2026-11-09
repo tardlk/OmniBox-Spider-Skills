@@ -772,3 +772,29 @@ POST {origin}/player/mplayer.php  {"url":"<data-u>","token":"<data-te>"}
   所以脚本里必须做冷却：失败后缓存 5 分钟，期间直接走 sniff/直链，别重试
 - 换来的收益：启播从 8~15 秒（sniffVideo 固定开销）降到 1~1.5 秒；
   失效线路也能在 0.5 秒内识别，而不是白等一轮嗅探
+
+## 36. 「同站群多域名」怎么判：同库、不同模板、不同 ID
+
+仓库里原有三个「枫叶」影视脚本，看起来像同一家，实测要分开看：
+
+| 脚本 | 目标站 | 模板/搜索路由 | 播放 | 结论 |
+|---|---|---|---|---|
+| 枫叶4K影院.js | www.zzztool.com | `template/z`、`/search/`、`mx-anthology-*` | 直取接口，1~2s | 保留 |
+| 枫叶.js | www.budaichuchen.net | `template/icp`、`/cupfox-search/`、无 `mx-anthology` | 只能 parse=1 | 删 |
+| 枫叶4K.js | www.cd-zj.com | 同上（与 枫叶.js 是同一份代码，diff 531 行） | 站挂了 | 删 |
+
+### 判断同站的证据链（别只看标题/logo）
+- **内容同源**：藏海传、尚公主(73011)、鉴定(96244) 两边都能开、标题一致
+- **但 ID 不同**：藏海传 budaichuchen=`50767`、zzztool=`39150767`；
+  灵武大陆 `39120067` 在 budaichuchen 直接 404 → 不是同一套库表
+- **模板/路由不同**：`icp` vs `z/zp`、`/cupfox-search/` vs `/search/`、
+  有无 `mx-anthology-*`、播放页有无 `player_aaaa`
+- **共有特征只说明同源，不说明同站**：都挂 `gimg0.baidu.com` 图床、
+  都用 `fgsrg.hzqingshan.com` 解析——后者是公开第三方解析，谁都能接
+
+### 结论与做法
+- 同一站群的不同域名，**DOM/路由/ID 全不一样，脚本不能换域名复用**
+- 判断「值不值得留」要跑一遍：home / category / detail / play 四个方法，
+  重点看 `play` 是否只能 `parse=1`（客户端不认页面地址）、封面是否带 `&`（会裂图）、
+  `pagecount` 是否合理；冒烟不过的直接删，避免用户装了播不了
+- 删之前把可复用的部分（弹幕匹配、TMDB 刮削骨架）记一笔，git 历史仍可取回
