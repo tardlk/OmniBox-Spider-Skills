@@ -904,3 +904,23 @@ OmniBox 的 SDK 只有 `request/sniffVideo/...`，没有「渲染页面」的接
 - 结论：这类「搜索被单独封、其余接口正常」的站，**别把搜索当可修复项**；
   要么让用户从桌面浏览器复制 cf_clearance（仍受 IP+UA 限制），要么直接放弃搜索，
   把源定位成「浏览 + 播放」，搜索交给能通的源
+
+## 41. Auete 系站点迁移：改域名 + 改结构 + base64 取流
+
+`auete.top` → `www.au1080.top`（旧域名只剩 `Redirecting...` 一个 302 页）。
+迁移后旧脚本的三处假设全部失效，值得记一下排查顺序：
+
+1. **先确认域名是否还是同一个站**：`auete.top` 返回 1 字节 + 302，跟进去才发现新域名；
+   页面 footer 里的友链（aeete.com / auete.asia）都是同一套 CMS
+2. **列表卡片换了骨架**：旧版是 `button.hdtag` + `<h2 class="title">`，
+   新版是 `<li data-href>` + `span.hdtag` + `<h2><a>`；用 `li[data-href]` 一把能抓全
+3. **详情页线路卡片**：`<div class="card mb-3 play-card" id="player_list">` 每张一条线路，
+   按这个字符串切块，块内 `<b>『片名』云播J线</b>` 是线路名，
+   `href="/Tv/xxx/play-{线路}-{集}.html"` 是分集
+4. **播放地址在 `var now = base64decode("...")`**，Base64 解出来就是 m3u8；
+   **不要取 `var next`** —— 那是下一集的地址（旧脚本就取错，播放对不上集）
+5. 首页 `/` 是 302 → `/index.html`，而 OmniBox SDK 的 `request` **不跟随跳转**，
+   要么直接请求 `/index.html`，要么在封装里自己处理 3xx
+
+补充：该站的搜索 `/auete4so.php` 需要算术验证码（56×20 图片，形如 `5+6=?`），
+同一 session 错一次就换图，所以不能靠枚举；没有 OCR 时只能退化为扫分类页做本地匹配。
