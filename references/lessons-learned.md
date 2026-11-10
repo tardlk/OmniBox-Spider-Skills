@@ -1143,3 +1143,41 @@ const CF_UA    = String(process.env.GIMY_UA || "").trim();      // 必须与拿 
    并排除带 `?url= / ?u= / ?v=` 的地址
 3. 播放解析写成阶梯更抗改版：`player_data/player_aaaa` → 页内 m3u8 → 同源 parse.php
    (`/v/ /d/ /n/ /`) → iframe 递归一层 → sniffVideo → 播放页
+
+## 45. 改版站先搜 GitHub 的同站实现，比自己盲猜 DOM 快十倍
+
+Gimy 那次我先靠盲猜写了一套「阶梯式」兜底，能跑但不知道模板长什么样。
+用 GitHub 代码搜索一搜，同站实现一大把，直接把模板结构、分类 id、线路选择器、
+播放加密方式全拿到了。
+
+### 怎么搜（本次可用的两条路）
+```
+https://gh-proxy.org/https://api.github.com/search/code?q=<域名>&per_page=100
+```
+- 走 gh-proxy 就能免 token 用 code search（直连 `api.github.com` 要认证，401）
+- 关键词用**域名**而不是站名：`gimyai.tw` 命中 118 条，`gimy` 全是无关仓库
+- 结果里剔除 tranco/top10k/ruleset 这类域名榜单，剩下的是真脚本
+
+### 本次捞到的实现（按价值排序）
+| 仓库 | 文件 | 价值 |
+|---|---|---|
+| `cyh92/live` | `spider/py/剧迷.py` | 最完整：explore 路由、线路正则、player_data 加密解密、解析站口径 |
+| `wzxxcz/wzxxcz`、`ninemui/9muiBOX`、`AA257265/265` | `py/GimyTV剧迷.py` | 分类 id 全表、地区/年份筛选值 |
+| `BryantChi/DoplyHub` | `docs/*-cloudflare-challenge-design.md` | CF 托管挑战的实测结论：真 Chrome 6~8 秒自动过，cf_clearance 是 HttpOnly |
+| `BryantChi/DoplyHub` | `endpoints.json` | 家族域名维护表（gimyai.tw / gitube.tv） |
+
+### 从里面学到的模板事实（MacCMS v10 改版）
+- 列表卡片：`<a class="poster" href="/detail/{id}.html">` + `alt` / `poster__title` / `poster__status`
+- 分类：`/explore/{tid}-{area}-{9×空}-{year}.html`（12 段 11 个连字符），36 条/页，
+  比 `/genre/{id}.html`（137KB）小得多（22~39KB）
+- 详情线路：`.route-title` + `div.eps[data-route-sid]` + `a.ep[href='/play/{vid}-{sid}-{nid}.html']`
+- 元数据：`<span class="k">地區：</span>中國大陸`
+- 搜索：`/index.php/ajax/suggest?mid=1&wd=&limit=20&page=` → `{code:1,list:[{id,name,pic}]}`
+- 播放：`var player_data = {url, from, encrypt}`，`encrypt=1` URL 编码、`=2` base64+URL 编码；
+  非直链（mgtv/qq/qsvip/JD4K…）用公开解析站 `v.attzy.com/ap/{qs|jd|lb}/?url=`
+
+### 教训
+- 盲写解析器时，**选择器一定要留二三级兜底**（新旧模板同时匹配），但别把兜底当主力：
+  拿到真实模板后，主力选择器要用新的，旧结构降级为 fallback
+- 同站实现之间会互相抄，看 2~3 个就能交叉验证；只信一个容易被它的历史包袱带偏
+- 这类 .py 源还能顺带确认「哪些线路是直链、哪些要解析」——比自己在黑盒里试快得多
