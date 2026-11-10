@@ -1042,3 +1042,53 @@ Auete 那次连着四个版本都在修封面（代理 → 服务端中转 → �
 - 正确顺序：先确认播放链路（detail/play）稳定，再问用户要不要封面；
   用户没主动要求就不要加「自动补图」这种重逻辑
 - 真要做也做成默认关闭的开关，别默认开
+
+## 43. 站点从 SSR 换成 Next.js 客户端渲染后，别再解析 HTML，去扒它的加密接口
+
+FKTV（fktv.me / 凡客影视）原先能靠 `cheerio` 解析列表页 + `POST /movie/detail`
+换集，改版后 HTML 只剩 `self.__next_f.push` 的空壳骨架（`<!--$--><!--$/-->`），
+列表和播放数据全在客户端 fetch 出来，旧脚本 home 有分类没片、detail 有片单没地址。
+
+### 定位接口的顺路做法
+1. 页面 HTML 里搜不到数据时，先确认是不是 App Router：
+   `grep -c '__NEXT_DATA__'`（0）、`grep -o 'self.__next_f.push'`（有）→ RSC 空壳
+2. 下 `/_next/static/chunks/*.js` 全量 grep：`fetch(`、`apiBaseUrl`、`apiKey`，
+   接口地址与加密 key 基本都硬编码在 chunk 里（本次 `apiBaseUrl:"/ysapi"`、`apiKey:"9ed1a661a6ab787a"`）
+3. 注意页面 HTML 里列出的 chunk 是**基础包**，路由级 chunk 不在里面，
+   所以 `.post("xxx")` 只能搜到零星几个 —— 别以为接口很少，靠猜 endpoint 更实际
+4. endpoint 是**可枚举的**：未知路径返回 `{"error":"接口未实现: foo/bar"}`，
+   参数缺失返回 `{"error":"必要参数错误!"}` / `{"error":"参数错误"}`，能靠错误文案反推
+
+### 本次接口的关键结论（可复用）
+- 请求/响应都是 **AES-128-ECB + PKCS7 + base64**，key 就是 apiKey 的 UTF-8 字节（16B）。
+  `crypto-js` 的 `AES.encrypt(str, Utf8.parse(key), {mode:ECB}).toString()` == Node 的
+  `createCipheriv("aes-128-ecb", key)` 输出 base64，直接对得上
+- **请求头 `version` / `deviceType` / `time` 三个缺一不可**，缺了就回
+  `数据封装错误! errorCode 2001`；`time` 只要格式对（`YYYY-MM-DD HH:mm:ss`），
+  实测偏移 ±8 小时都能过，容器时区不用担心
+- `deviceId` 随便给 32 位 hex 就行，不必先拿 cookie；`Origin/Referer` 可省
+- Content-Type 不重要（`application/octet-stream` / `application/json` / `text/plain` 都能过），
+  这点很关键：SDK 的 `request()` 只要带 body 就强制 json，本来以为要绕，实际不用
+- 响应体是 base64 文本（二进制会被 SDK 的 `chunk.toString()` 弄坏，幸好这里不是二进制）
+- `movie/search` 一把通吃：`{keywords:"", cat_id, page, page_size, order}`，
+  空关键词=全库（十几万条），`total/last_page/page_size` 齐全，
+  **比 `movie/channel` 好用得多**（后者是按板块聚合，page 2 只剩 2 个块）
+- `movie/home` 一次下发 350KB+，弱网要十几秒；首页改用 search 拉一页 27KB，
+  启播从 20s 降到 1.8s
+- 详情里 `links` 对剧集是「集」、对电影是「版本（抢先版/1080P）」，结构一样，统一当 episodes 用
+- **`play_links[].m3u8_url` 只有 50 秒预览档**（`max_preview_time:"50"`），且分片用
+  `../s/xxx/yyy` 相对路径，拼出来 404 —— 真正能放整片的是
+  `playback_v2.video_lines[].h264.url`（`/m3c` 国内、`/m3v` 海外，带 sign 签名，3 小时过期），
+  列表里是**绝对地址**（cloudfront / hd.zipnuz.cn），播放器直连即可
+- 换集就是 `movie/detail {id, link_id}`，返回该集的签名地址，一次请求 300~800ms
+
+### 顺带修掉两个 SDK 层面的坑
+- **`OmniBox.request()` 的 `options.timeout` 根本不生效**（镜像里的 omnibox_sdk.js 是裸
+  `https.request`，只做了 gzip/deflate/br 解压），连接挂住会一直等；配合
+  `Promise.race` 超时后残留 socket 还会把进程拖到 **114 秒**才退出
+  （宿主等进程退出才结算，表现就是「点播放转圈两分钟」）
+- 正解：脚本里直接 `require("http"/"https"/"zlib")` 自己发（沙箱是真 Node，允许），
+  拿到 `req.setTimeout → req.destroy()` 的真超时；再加 `agent:false`
+  （Node 19+ 全局 agent 默认 keepAlive，池里的死连接会一直耗到超时），
+  首次尝试 `family:4`（AAAA 连不通的环境会白等一个连接超时），失败再退回默认
+- `OmniBox.log()` 走宿主 HTTP 且没有超时，**不要 await**，否则日志一卡整个 handler 跟着卡
