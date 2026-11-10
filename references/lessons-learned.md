@@ -1092,3 +1092,54 @@ FKTV（fktv.me / 凡客影视）原先能靠 `cheerio` 解析列表页 + `POST /
   （Node 19+ 全局 agent 默认 keepAlive，池里的死连接会一直耗到超时），
   首次尝试 `family:4`（AAAA 连不通的环境会白等一个连接超时），失败再退回默认
 - `OmniBox.log()` 走宿主 HTTP 且没有超时，**不要 await**，否则日志一卡整个 handler 跟着卡
+
+## 44. Cloudflare 托管挑战挡死整站时：让用户喂 Cookie，而不是硬刚浏览器
+
+Gimy（gimyai.tw / aigm.tv / gmtv.app）现在的状态是**全站托管挑战**：
+
+```
+HTTP/2 403
+cf-mitigated: challenge
+server: cloudflare
+<title>Just a moment...</title>     ← 繁中环境会显示「請稍候...」
+```
+
+连 `/robots.txt`、`/favicon.ico`、`/index.php/ajax/data` 都是 403，换 UA（Googlebot /
+iPhone / curl）、换 Accept 头、加 `X-Requested-With` 全无效。
+
+### 先判断是「IP 被拦」还是「全站挑战」
+- 挑战页（`cf-mitigated: challenge`）说明 CF 认为「可能是人」，浏览器过得去；
+  硬拦（`Attention Required!`）说明这个 IP/ASN 直接进黑名单
+- 实测：南京联通家宽 IP 拿到的是**挑战**，而第三方抓取服务（microlink）拿到的是
+  **Attention Required** —— 机房 IP 是被硬拦的，家宽只是被挑战
+- 结论：**家宽 + 真实浏览器 = 能过**，所以正确解法不是模拟浏览器，而是复用浏览器的
+  `cf_clearance`
+
+### 无头浏览器为什么指望不上
+容器里只有 Playwright 的 `chromium_headless_shell`（没有完整 chromium）。实测：
+- 加 `--disable-blink-features=AutomationControlled`、伪造 `navigator.webdriver`/
+  plugins/languages/chrome.runtime，页面依然停在「請稍候...」，60 秒拿不到任何 cookie
+- 宿主自带的 `video_sniffer.py` 也是同一个 headless shell，所以 `sniffVideo` 同样过不去
+- 想装完整 chromium 要 `playwright install chromium`（~150MB），不适合塞进脚本依赖
+
+### 可落地的方案：CF_COOKIE
+```js
+const CF_COOKIE = String(process.env.GIMY_COOKIE || "").trim(); // 手动粘贴亦可
+const CF_UA    = String(process.env.GIMY_UA || "").trim();      // 必须与拿 cookie 的浏览器一致
+```
+- `cf_clearance` 绑定 **出口 IP + User-Agent**，所以在 NAS 上要满足：NAS 与浏览器同一出口 IP、
+  UA 用浏览器原串；一般 30 分钟~几小时过期，过期后重新复制
+- 403/503 时要**分类报错**：没配 Cookie → 「请填 CF_COOKIE」；配了还 403 →
+  「Cookie 过期或 IP/UA 不匹配」。别让各方法静默返回空列表，用户根本看不出原因
+- 顺手把 `sec-ch-ua`、`sec-fetch-dest/mode/site`、`Upgrade-Insecure-Requests` 补齐，
+  Accept-Language 按站点地区改（台湾站用 `zh-TW` 优先），能少踩一点风控
+
+### 顺带记两个通用坑
+1. **播放域名会整域消失**：`play.gimyai.tw` 在 1.1.1.1 / 8.8.8.8 / 223.5.5.5 全部无 A 记录，
+   旧脚本里的 `parse.php` 链路等于写死了一个死域名。排查播放问题第一步就该 `dig` 播放域
+2. **别把「解析页 URL」当直链**：`https://jx.xxx/v/?url=https%3A%2F%2Fcdn%2Fx.mp4` 这种
+   以 `.mp4` 结尾的跳转页，用 `\.(m3u8|mp4|flv)(\?|$)` 判断会误命中，
+   播放器拿到的是整个 iframe 页。正解是取 `url.split("?")[0]` 再判后缀，
+   并排除带 `?url= / ?u= / ?v=` 的地址
+3. 播放解析写成阶梯更抗改版：`player_data/player_aaaa` → 页内 m3u8 → 同源 parse.php
+   (`/v/ /d/ /n/ /`) → iframe 递归一层 → sniffVideo → 播放页
